@@ -9,17 +9,23 @@ def binary_open(filename : str, mode : str) -> BinaryIO:
 	return cast(BinaryIO, open(filename, mode + 'b'))
 
 def get_files() -> Tuple[BinaryIO, BinaryIO]:
-	inputfile = binary_open("/dev/stdin", 'r')
-	outputfile = binary_open("/dev/stdout", 'w')
+	inputfilepath = "/dev/stdin"
+	outputfilepath = "/dev/stdout"
 
 	argc = len(sys.argv)
 
 	if argc > 1:
-		inputfile.close()
-		inputfile = binary_open(sys.argv[1], 'r')
+		inputfilepath = sys.argv[1]
+		outputfilepath = inputfilepath
 	if argc > 2:
-		outputfile.close()
-		outputfile = binary_open(sys.argv[2], 'w')
+		outputfilepath = sys.argv[2]
+
+	if outputfilepath == inputfilepath:
+		inputfile = binary_open(inputfilepath, 'r+')
+		outputfile = inputfile
+	else:
+		inputfile = binary_open(inputfilepath, 'r')
+		outputfile = binary_open(outputfilepath, 'w')
 
 	return (inputfile, outputfile)
 
@@ -42,13 +48,11 @@ class BetterStruct:
 		self._tuple = recordclass("my_tuple", struct_fields)
 		self.size = self._struct.size
 
-	def read(self, infile : BinaryIO) -> None:
-		my_bytes = infile.read(self._struct.size)
-		self.fields = self._tuple._make(self._struct.unpack(my_bytes))
+	def unpack(self, data : bytes) -> None:
+		self.fields = self._tuple._make(self._struct.unpack(data[:self.size]))
 
-	def write(self, outfile : BinaryIO) -> None:
-		my_bytes = self._struct.pack(*self.fields)
-		outfile.write(my_bytes)
+	def pack(self) -> bytes:
+		return self._struct.pack(*self.fields)
 
 if __name__ == "__main__":
 	(inputfile, outputfile) = get_files()
@@ -63,7 +67,9 @@ if __name__ == "__main__":
 		("7x", None),
 	], True)
 
-	header_ident.read(inputfile)
+	header_ident_bytes = inputfile.read(header_ident.size)
+	header_ident.unpack(header_ident_bytes)
+	header_ident.fields.version = 0
 
 	if header_ident.fields.magic != b'\x7FELF':
 		print("Input is not an ELF file.", file=sys.stderr)
@@ -72,6 +78,8 @@ if __name__ == "__main__":
 	if header_ident.fields.arch != 2:
 		print("Only 64-bit ELF files are currently supported.", file=sys.stderr)
 		exit(1)
+
+	file_contents = header_ident.pack() + inputfile.read(-1)
 
 	header = BetterStruct([
 		("H", "type"),
@@ -89,7 +97,7 @@ if __name__ == "__main__":
 		("H", "shstrndx"),
 	], header_ident.fields.endianness == 1)
 
-	header.read(inputfile)
+	header.unpack(file_contents[header_ident.size:])
 
 	shoff = header.fields.shoff
 	shentsize = header.fields.shentsize
@@ -101,26 +109,38 @@ if __name__ == "__main__":
 	header.fields.shnum = 0
 	header.fields.shstrndx = 0
 
-	shsize = shentsize*shnum
+	file_contents = file_contents[:header_ident.size] + header.pack() + file_contents[header_ident.size+header.size:]
 
-	offset = shoff - (header_ident.size + header.size)
+	shstr_entry = BetterStruct([
+		("L", "name"),
+		("L", "type"),
+		("Q", "flags"),
+		("Q", "addr"),
+		("Q", "offset"),
+		("Q", "size"),
+		("L", "link"),
+		("L", "info"),
+		("Q", "addralign"),
+		("Q", "entsize"),
+	], header_ident.fields.endianness == 1)
 
-	intermediate_bytes = inputfile.read(offset)
-	sh_bytes = inputfile.read(shsize)
-	leftover_bytes = inputfile.read(-1)
+	shstr_offset = shoff + shentsize*shstrndx
+	shstr_entry.unpack(file_contents[shstr_offset:])
 
-	print(shstrndx, file=sys.stderr)
+	SHT_STRTAB = 0x03
+	if shstr_entry.fields.type != SHT_STRTAB:
+		print("Can't find section header's string table.", file=sys.stderr)
+		exit(1)
 
-	if len(leftover_bytes) != 0:
-		sh_bytes = b'\x00' * len(sh_bytes)
-	else:
-		sh_bytes = b''
 
-	header_ident.write(outputfile)
-	header.write(outputfile)
-	outputfile.write(intermediate_bytes)
-	outputfile.write(sh_bytes)
-	outputfile.write(leftover_bytes)
+	end_of_strtable = shstr_entry.fields.offset + shstr_entry.fields.size
+	if abs(shoff - end_of_strtable) > 8:
+		print("Section header and its string table are not roughly contiguous.", file=sys.stderr)
+		exit(1)
+
+	outputfile.seek(0)
+	outputfile.write(file_contents[:shstr_entry.fields.offset])
+	outputfile.truncate()
 
 	inputfile.close()
 	outputfile.close()
