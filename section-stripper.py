@@ -108,6 +108,8 @@ if __name__ == "__main__":
 	header.fields.shnum = 0
 	header.fields.shstrndx = 0
 
+	end_of_section_header = shoff + shentsize*shnum
+
 	file_contents = file_contents[:header_ident.size] + header.pack() + file_contents[header_ident.size+header.size:]
 
 	shstr_entry = BetterStruct([
@@ -131,10 +133,13 @@ if __name__ == "__main__":
 		print("Can't find section header's string table.", file=sys.stderr)
 		exit(1)
 
-
 	end_of_strtable = shstr_entry.fields.offset + shstr_entry.fields.size
 	if abs(shoff - end_of_strtable) > 8:
 		print("Section header and its string table are not roughly contiguous.", file=sys.stderr)
+		exit(1)
+
+	if end_of_section_header != len(file_contents):
+		print("Trailing bytes after end of section header.", file=sys.stderr)
 		exit(1)
 
 	outputfile.seek(0)
