@@ -69,7 +69,6 @@ if __name__ == "__main__":
 
 	header_ident_bytes = inputfile.read(header_ident.size)
 	header_ident.unpack(header_ident_bytes)
-	header_ident.fields.version = 0
 
 	if header_ident.fields.magic != b'\x7FELF':
 		print("Input is not an ELF file.", file=sys.stderr)
